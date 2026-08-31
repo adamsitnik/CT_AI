@@ -556,8 +556,7 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
         using NpgsqlCommand command = connection.CreateCommand();
         command.CommandText = "SELECT EXISTS(SELECT * FROM pg_extension WHERE extname='vector')";
 
-        bool extensionAlreadyExisted = (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
-        return extensionAlreadyExisted;
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private Task<T> RunOperationAsync<T>(string operationName, Func<Task<T>> operation)
