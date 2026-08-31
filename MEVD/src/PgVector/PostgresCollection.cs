@@ -494,28 +494,27 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
             using var batch = connection.CreateBatch();
 
             // First, check if the pgvector extension is already installed in PostgreSQL, and then install it if not.
-            // Note that we do a separate check before doing CREATE EXTENSION IF EXISTS in order to know if it was actually created,
-            // since in that case we must also must call ReloadTypesAsync() at the Npgsql level
+            // The check must be executed separately so that users without permission to create extensions can use an
+            // extension that was installed by an administrator.
             batch.BatchCommands.Add(new NpgsqlBatchCommand("SELECT EXISTS(SELECT * FROM pg_extension WHERE extname='vector')"));
-            batch.BatchCommands.Add(new NpgsqlBatchCommand("CREATE EXTENSION IF NOT EXISTS vector"));
 
-            bool extensionAlreadyExisted;
-
-            try
-            {
-                extensionAlreadyExisted = (bool)(await batch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
-            }
-            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
-            {
-                // CREATE EXTENSION IF NOT EXISTS is not atomic in PG, so concurrent sessions doing this at the same time
-                // may trigger a unique constraint violation. We ignore it and interpret it to mean that the extension
-                // already exists.
-                extensionAlreadyExisted = true;
-            }
+            bool extensionAlreadyExisted = (bool)(await batch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
 
             if (!extensionAlreadyExisted)
             {
-                await connection.ReloadTypesAsync().ConfigureAwait(false);
+                batch.BatchCommands.Clear();
+                batch.BatchCommands.Add(new NpgsqlBatchCommand("CREATE EXTENSION IF NOT EXISTS vector"));
+
+                try
+                {
+                    await batch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await connection.ReloadTypesAsync().ConfigureAwait(false);
+                }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+                {
+                    // CREATE EXTENSION IF NOT EXISTS is not atomic in PG, so concurrent sessions doing this at the same time
+                    // may trigger a unique constraint violation. We ignore it since the extension now exists.
+                }
             }
 
             batch.BatchCommands.Clear();
