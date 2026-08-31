@@ -488,33 +488,39 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
 
         await using (connection)
         {
-            var pgVersion = connection.PostgreSqlVersion;
+            Version pgVersion = connection.PostgreSqlVersion;
 
             // Prepare the SQL commands.
             using var batch = connection.CreateBatch();
 
             // First, check if the pgvector extension is already installed in PostgreSQL, and then install it if not.
-            // Note that we do a separate check before doing CREATE EXTENSION IF EXISTS in order to know if it was actually created,
-            // since in that case we must also must call ReloadTypesAsync() at the Npgsql level
-            batch.BatchCommands.Add(new NpgsqlBatchCommand("SELECT EXISTS(SELECT * FROM pg_extension WHERE extname='vector')"));
-            batch.BatchCommands.Add(new NpgsqlBatchCommand("CREATE EXTENSION IF NOT EXISTS vector"));
-
-            bool extensionAlreadyExisted;
-
-            try
-            {
-                extensionAlreadyExisted = (bool)(await batch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
-            }
-            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
-            {
-                // CREATE EXTENSION IF NOT EXISTS is not atomic in PG, so concurrent sessions doing this at the same time
-                // may trigger a unique constraint violation. We ignore it and interpret it to mean that the extension
-                // already exists.
-                extensionAlreadyExisted = true;
-            }
+            // The check must be executed separately so that users without permission to create extensions can use an
+            // extension that was installed by an administrator.
+            bool extensionAlreadyExisted = await IsVectorExtensionInstalledAsync(connection, cancellationToken).ConfigureAwait(false);
 
             if (!extensionAlreadyExisted)
             {
+                batch.BatchCommands.Clear();
+                batch.BatchCommands.Add(new NpgsqlBatchCommand("CREATE EXTENSION IF NOT EXISTS vector"));
+
+                try
+                {
+                    await batch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+                {
+                    // CREATE EXTENSION IF NOT EXISTS is not atomic in PG, so concurrent sessions doing this at the same time
+                    // may trigger a unique constraint violation. We ignore it since the extension now exists.
+                }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+                {
+                    bool extensionInstalledConcurrently = await IsVectorExtensionInstalledAsync(connection, cancellationToken).ConfigureAwait(false);
+                    if (!extensionInstalledConcurrently)
+                    {
+                        throw;
+                    }
+                }
+
                 await connection.ReloadTypesAsync().ConfigureAwait(false);
             }
 
@@ -541,6 +547,14 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
             _collectionMetadata,
             operationName,
             operation);
+
+    private static async Task<bool> IsVectorExtensionInstalledAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='vector')";
+
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+    }
 
     private Task<T> RunOperationAsync<T>(string operationName, Func<Task<T>> operation)
         => VectorStoreErrorHandler.RunOperationAsync<T, NpgsqlException>(
