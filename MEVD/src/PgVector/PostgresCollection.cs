@@ -554,7 +554,7 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
     private static async Task<bool> IsVectorExtensionInstalledAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
         using NpgsqlCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT EXISTS(SELECT * FROM pg_extension WHERE extname='vector')";
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='vector')";
 
         return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
