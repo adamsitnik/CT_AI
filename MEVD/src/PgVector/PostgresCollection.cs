@@ -514,6 +514,7 @@ public class PostgresCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRe
                 {
                     // CREATE EXTENSION IF NOT EXISTS is not atomic in PG, so concurrent sessions doing this at the same time
                     // may trigger a unique constraint violation. We ignore it since the extension now exists.
+                    await connection.ReloadTypesAsync().ConfigureAwait(false);
                 }
             }
 
